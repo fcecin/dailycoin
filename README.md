@@ -1,4 +1,4 @@
 # dailycoin
-Source code for the Dailycoin (XDL) digital currency hosted on the dailycoineos contract on the EOS mainnet.
+Source code for the Dailycoin (XDL) digital currency for the Worbli (https://worbli.io) blockchain.
 
-The project website is at http://daily-coin.org
+The project website is at https://daily-coin.org
