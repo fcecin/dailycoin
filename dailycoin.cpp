@@ -223,16 +223,16 @@ namespace eosio {
    void token::try_ubi_claim( name from, const symbol& sym, name payer, stats& statstable, const currency_stats& st, bool fail )
    {
       // *****************************************************************************
-      // TODO: check if this account is verified by EOS Voice KYC
-      // If it isn't, return.
+      // TODO: check if this account has verified identity
+      // If it doesn't, return.
       // If fail == true, explain why the claim failed in an assert.
       // *****************************************************************************
       //
-      // bool has_voice_kyc = CHECK_ACCOUNT_HAS_VOICE_KYC ( from );
+      // bool has_id = CHECK_ACCOUNT_HAS_ID ( from );
       // if (fail) {
-      //   check( has_voice_kyc, "please validate this EOS account with Voice (voice.com) to claim an income" );
+      //   check( has_id, "please validate your account's identity to claim an income" );
       // } else {
-      //   if (! has_voice_kyc)
+      //   if (! has_id)
       //      return;
       // }
 
@@ -251,13 +251,19 @@ namespace eosio {
 
       // If we are NOT in the reward period, then a last_claim_day of zero means YESTERDAY,
       //   that is, you get ONE token when you successfully claim for the first time today
-      //   in a verified EOS Voice account.
-      // Otherwise it means the user is entitled to an extra 360 (max claim days) coins as
-      //   a bonus.
-      if ((curr_lcd == 0) && (today > last_signup_reward_day)) {
-         curr_lcd = today - 1;
-      } else {
-         curr_lcd = today - max_past_claim_days;
+      //   in a verified account.
+      // Otherwise it means the user is entitled to an additional bonus which is the number
+      //   of days until the bonus deadline. We force the bonus by emulating a "last claim
+      //   date" value pushed into the past as needed (capped at max_past_claim_days).
+      if (curr_lcd == 0) {
+        curr_lcd = today - 1;
+        if (today <= last_signup_reward_day) {
+          int64_t bonus_days = last_signup_reward_day - today + 1;
+          if (bonus_days > max_past_claim_days) {
+            bonus_days = max_past_claim_days;
+          }
+          curr_lcd -= bonus_days;
+        }
       }
 
       // The UBI grants 1 token per day per account.
@@ -323,9 +329,9 @@ namespace eosio {
 
       action {
          permission_level{_self, name("active")},
-            _self,
-               name("income"),
-               income_notification_abi { .to=claimant, .quantity=claim_quantity, .memo=claim_memo }
+         _self,
+         name("income"),
+         income_notification_abi { .to=claimant, .quantity=claim_quantity, .memo=claim_memo }
       }.send();
    }
 

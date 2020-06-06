@@ -124,7 +124,7 @@ namespace eosio {
 
       static const int64_t max_past_claim_days = 360;
 
-      static const time_type last_signup_reward_day = 18628; // January 1st, 2021
+      static const time_type last_signup_reward_day = 18809; // July 1st, 2021
    };
 
 } /// namespace eosio
