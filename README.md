@@ -3,6 +3,6 @@ Source code for the Dailycoin (XDL) digital currency for the Worbli (https://wor
 
 The project website is at https://daily-coin.org
 
-## compiling
+## Compiling
 
-eosio-cpp dailycoin.cpp -I . -o dailycoin.wasm -abigen
+```eosio-cpp dailycoin.cpp -I . -o dailycoin.wasm -abigen```
