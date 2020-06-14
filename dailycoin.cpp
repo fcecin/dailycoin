@@ -134,6 +134,9 @@ namespace eosio {
                a.last_claim_day = 0;
             });
       }
+
+      // reuse this call to also check for income (new accounts will start with 1 XDL)
+      try_ubi_claim( owner, symbol, ram_payer, statstable, st, false );
    }
 
    void token::close( name owner, const symbol& symbol )
@@ -152,16 +155,17 @@ namespace eosio {
    }
 
    void token::claim( name owner ) {
-      require_auth( owner );
-      require_recipient( owner );
+      //require_auth( owner );
+      //require_recipient( owner );
 
       // in case the user didn't have an open balance yet, now they will have one.
+      // open() also checks for income.
       open( owner, COIN_SYMBOL, owner );
 
-      stats statstable( _self, COIN_SYMBOL.code().raw() );
-      const auto& st = statstable.get( COIN_SYMBOL.code().raw() );
-
-      try_ubi_claim( owner, COIN_SYMBOL, owner, statstable, st, true );
+      //stats statstable( _self, COIN_SYMBOL.code().raw() );
+      //const auto& st = statstable.get( COIN_SYMBOL.code().raw() );
+      //
+      //try_ubi_claim( owner, COIN_SYMBOL, owner, statstable, st, true );
    }
 
    void token::burn( name owner, asset quantity )
