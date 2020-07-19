@@ -48,6 +48,9 @@ namespace eosio {
          void claim( name owner ); // Implicit token symbol
 
       [[eosio::action]]
+        void claimfor( name owner, name ram_payer ); // Implicit token symbol
+
+      [[eosio::action]]
          void burn( name owner, asset quantity );
 
       [[eosio::action]]
@@ -124,7 +127,7 @@ namespace eosio {
 
       static const int64_t max_past_claim_days = 360;
 
-      static const time_type last_signup_reward_day = 18809; // July 1st, 2021
+      static const time_type last_signup_reward_day = 18840; // August 1st, 2021
    };
 
 } /// namespace eosio

@@ -168,6 +168,12 @@ namespace eosio {
       //try_ubi_claim( owner, COIN_SYMBOL, owner, statstable, st, true );
    }
 
+   void token::claimfor( name owner, name ram_payer )
+   {
+      require_recipient( owner );
+      open( owner, COIN_SYMBOL, ram_payer );
+   }
+
    void token::burn( name owner, asset quantity )
    {
       require_auth( owner );
