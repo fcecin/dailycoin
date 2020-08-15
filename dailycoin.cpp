@@ -26,6 +26,7 @@ namespace eosio {
             s.supply.symbol = maximum_supply.symbol;
             s.max_supply    = maximum_supply;
             s.issuer        = issuer;
+            s.burned.symbol = maximum_supply.symbol;
          });
    }
 
@@ -82,6 +83,7 @@ namespace eosio {
 
       statstable.modify( st, same_payer, [&]( auto& s ) {
             s.supply -= quantity;
+            s.burned += quantity;
          });
 
       sub_balance( st.issuer, quantity );
@@ -132,6 +134,7 @@ namespace eosio {
          acnts.emplace( ram_payer, [&]( auto& a ){
                a.balance = asset{0, symbol};
                a.last_claim_day = 0;
+               a.profile = "";
             });
       }
 
@@ -193,6 +196,7 @@ namespace eosio {
 
       statstable.modify( st, same_payer, [&]( auto& s ) {
             s.supply -= quantity;
+            s.burned += quantity;
          });
 
       sub_balance( owner, quantity );
@@ -201,6 +205,73 @@ namespace eosio {
    void token::income( name to, asset quantity, string memo ) {
       require_auth( _self );
       require_recipient( to );
+   }
+
+   void token::setshare( name owner, name to, uint8_t percent )
+   {
+      require_auth( owner );
+
+      check( percent <= 100, "invalid percent value" );
+      check( owner != to , "cannot setshare to self" );
+      check( is_account( to ), "to account does not exist");
+
+      shares stbl( _self, owner.value );
+      auto it = stbl.find( to.value );
+      if ( it == stbl.end() ) {
+         if (percent > 0) {
+            stbl.emplace( owner, [&]( auto& s ){
+                  s.to      = to;
+                  s.percent = percent;
+              });
+         }
+      } else {
+         if (percent > 0) {
+            stbl.modify( it, same_payer, [&]( auto& s ) {
+                  s.percent = percent;
+              });
+         } else {
+            stbl.erase( it );
+         }
+      }
+
+      // If share percent total exceed 100%, refuse this action
+      uint64_t pcsum = 0; 
+      it = stbl.begin();
+      while ( it != stbl.end() ) {
+        pcsum += (*it).percent;
+        ++it;
+      }
+      check( pcsum <= 100, "share total would exceed 100%" );
+   }
+
+   void token::resetshare( name owner )
+   {
+      require_auth( owner );
+      shares stbl( _self, owner.value );
+      auto it = stbl.begin();
+      while ( it != stbl.end() ) {
+         it = stbl.erase( it );
+      }
+   }
+
+   void token::shareincome( name from, name to, asset quantity, uint8_t percent )
+   {
+      require_auth( _self );
+      require_recipient( from );
+      require_recipient( to );
+   }
+
+   void token::setprofile( name owner, string profile )
+   {
+      require_auth( owner );
+
+      check( profile.size() <= 1024, "profile has more than 1024 bytes" );
+
+      accounts acnts( _self, owner.value );
+      const auto& ac = acnts.get( COIN_SYMBOL.code().raw(), "no balance object found" );
+      acnts.modify( ac, owner, [&]( auto& a ) {
+            a.profile = profile;
+         });
    }
 
    void token::sub_balance( name owner, asset value ) {
@@ -222,6 +293,7 @@ namespace eosio {
          to_acnts.emplace( ram_payer, [&]( auto& a ){
                a.balance = value;
                a.last_claim_day = 0;
+               a.profile = "";
             });
       } else {
          to_acnts.modify( to, same_payer, [&]( auto& a ) {
@@ -322,7 +394,53 @@ namespace eosio {
             a.last_claim_day = curr_lcd + last_claim_day_delta;
          });
 
-      // Pay the user doing the transfer ("from").
+      // Now, the actual income payment can be *shared*, so we need to check the shares table.
+      // So, we iterate over the shares table for "from" and look for (to, percent) entries to see
+      //   which "to"s get which percentage of the claim_quantity.
+      // The sum of percentages is expected to already not be exceeding 100. But if it does, this code
+      //   just gracefully runs out of funds to distribute.
+      // Each income share is logged as a shareincome action so the parties involved can understand
+      //   what's going on.
+
+      int64_t total_share_available = claim_quantity.amount;
+      int64_t share_available = total_share_available;
+
+      uint64_t pcsum = 0;
+      shares stbl( _self, from.value );
+      auto it = stbl.begin();
+      while ( it != stbl.end() ) {
+        const auto& sh = *it;
+
+        int64_t shareamt = 0;
+        pcsum += sh.percent;
+
+        if ( pcsum >= 100 ) {
+          // Last share: give everything, including all the truncation error
+          shareamt = share_available;
+        } else {
+          // Not last share: give its percent w.r.t. to the total available
+          //   for sharing, truncating the fractional part (rounds down)
+          shareamt = (total_share_available * sh.percent) / 100;
+        }
+
+        // apply the shareamt
+        share_available -= shareamt;
+        asset share_quantity = asset{shareamt, sym};
+
+        // log the giving and give it
+        log_share( from, sh.to, share_quantity, sh.percent );
+        add_balance( sh.to, share_quantity, payer );
+
+        // If this is the last share, end the action
+        if ( share_available <= 0 ) {
+          return;
+        }
+
+        ++it;
+      }
+
+      // If we reach this code, then the UBI claimer has nonzero funds to receive
+      claim_quantity.set_amount(share_available);
       add_balance( from, claim_quantity, payer );
    }
 
@@ -345,6 +463,17 @@ namespace eosio {
       }.send();
    }
 
+   // Log an UBI share.
+   void token::log_share( name giver, name receiver, asset share_quantity, uint8_t share_percent )
+   {
+      action {
+         permission_level{_self, name("active")},
+         _self,
+         name("shareincome"),
+         shareincome_notification_abi { .from=giver, .to=receiver, .quantity=share_quantity, .percent=share_percent }
+      }.send();
+   }
+  
    // "days" is days since epoch
    string token::days_to_string( int64_t days )
    {

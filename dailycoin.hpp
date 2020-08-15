@@ -56,10 +56,29 @@ namespace eosio {
       [[eosio::action]]
          void income( name to, asset quantity, string memo );
 
+      [[eosio::action]]
+         void setshare( name owner, name to, uint8_t percent ); // Implicit token symbol
+
+      [[eosio::action]]
+         void resetshare( name owner ); // Implicit token symbol
+
+      [[eosio::action]]
+         void shareincome( name from, name to, asset quantity, uint8_t percent ); // Implicit token symbol
+
+      [[eosio::action]]
+         void setprofile( name owner, string profile ); // Implicit token symbol
+
       struct income_notification_abi {
          name        to;
          asset       quantity;
          string      memo;
+      };
+
+      struct shareincome_notification_abi {
+         name        from;
+         name        to;
+         asset       quantity;
+         uint8_t     percent;
       };
 
       static asset get_supply( name token_contract_account, symbol_code sym_code )
@@ -85,6 +104,11 @@ namespace eosio {
       using claim_action = eosio::action_wrapper<"claim"_n, &token::claim>;
       using burn_action = eosio::action_wrapper<"burn"_n, &token::burn>;
       using income_action = eosio::action_wrapper<"income"_n, &token::income>;
+      using setshare_action = eosio::action_wrapper<"setshare"_n, &token::setshare>;
+      using resetshare_action = eosio::action_wrapper<"resetshare"_n, &token::resetshare>;
+      using shareincome_action = eosio::action_wrapper<"shareincome"_n, &token::shareincome>;
+      using setprofile_action = eosio::action_wrapper<"setprofile"_n, &token::setprofile>;
+
    private:
 
       // This contract is hard-coded to support only tokens with a precision of 4.
@@ -94,11 +118,12 @@ namespace eosio {
       // This contract is intended to be used with this single token/symbol only.
       static constexpr symbol COIN_SYMBOL = symbol("XDL", SYMBOL_PRECISION);
 
-      typedef uint16_t time_type;
+      typedef uint32_t time_type;
 
       struct [[eosio::table]] account {
          asset       balance;
          time_type   last_claim_day;
+         string      profile;
 
          uint64_t primary_key()const { return balance.symbol.code().raw(); }
       };
@@ -107,12 +132,21 @@ namespace eosio {
          asset    supply;
          asset    max_supply;
          name     issuer;
+         asset    burned;
 
          uint64_t primary_key()const { return supply.symbol.code().raw(); }
       };
 
+      struct [[eosio::table]] share {
+         name     to;
+         uint8_t  percent;
+
+         uint64_t primary_key()const { return to.value; }
+      };
+      
       typedef eosio::multi_index< "accounts"_n, account > accounts;
       typedef eosio::multi_index< "stat"_n, currency_stats > stats;
+      typedef eosio::multi_index< "shares"_n, share > shares;
 
       void sub_balance( name owner, asset value );
       void add_balance( name owner, asset value, name ram_payer );
@@ -120,6 +154,8 @@ namespace eosio {
       void try_ubi_claim( name from, const symbol& sym, name payer, stats& statstable, const currency_stats& st, bool fail );
 
       void log_claim( name claimant, asset claim_quantity, time_type next_last_claim_day, time_type lost_days );
+
+      void log_share( name giver, name receiver, asset share_quantity, uint8_t share_percent );
 
       static string days_to_string( int64_t days );
 
