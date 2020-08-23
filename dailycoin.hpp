@@ -123,7 +123,6 @@ namespace eosio {
       struct [[eosio::table]] account {
          asset       balance;
          time_type   last_claim_day;
-         string      profile;
 
          uint64_t primary_key()const { return balance.symbol.code().raw(); }
       };
@@ -133,6 +132,7 @@ namespace eosio {
          asset    max_supply;
          name     issuer;
          asset    burned;
+         uint64_t claims;
 
          uint64_t primary_key()const { return supply.symbol.code().raw(); }
       };
@@ -143,10 +143,17 @@ namespace eosio {
 
          uint64_t primary_key()const { return to.value; }
       };
-      
+
+      struct [[eosio::table]] profile {
+         string   profile;
+
+         uint64_t primary_key()const { return 0; }
+      };
+
       typedef eosio::multi_index< "accounts"_n, account > accounts;
       typedef eosio::multi_index< "stat"_n, currency_stats > stats;
       typedef eosio::multi_index< "shares"_n, share > shares;
+      typedef eosio::multi_index< "profiles"_n, profile > profiles;
 
       void sub_balance( name owner, asset value );
       void add_balance( name owner, asset value, name ram_payer );
@@ -163,7 +170,7 @@ namespace eosio {
 
       static const int64_t max_past_claim_days = 360;
 
-      static const time_type last_signup_reward_day = 18840; // August 1st, 2021
+      static const time_type last_signup_reward_day = 18871; // September 1st, 2021
    };
 
 } /// namespace eosio

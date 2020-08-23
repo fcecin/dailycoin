@@ -27,6 +27,7 @@ namespace eosio {
             s.max_supply    = maximum_supply;
             s.issuer        = issuer;
             s.burned.symbol = maximum_supply.symbol;
+            s.claims        = 0;
          });
    }
 
@@ -134,7 +135,6 @@ namespace eosio {
          acnts.emplace( ram_payer, [&]( auto& a ){
                a.balance = asset{0, symbol};
                a.last_claim_day = 0;
-               a.profile = "";
             });
       }
 
@@ -265,13 +265,27 @@ namespace eosio {
    {
       require_auth( owner );
 
-      check( profile.size() <= 1024, "profile has more than 1024 bytes" );
+      uint64_t psize = profile.size();
 
-      accounts acnts( _self, owner.value );
-      const auto& ac = acnts.get( COIN_SYMBOL.code().raw(), "no balance object found" );
-      acnts.modify( ac, owner, [&]( auto& a ) {
-            a.profile = profile;
-         });
+      check( psize <= 1024, "profile has more than 1024 bytes" );
+
+      profiles pfs( _self, owner.value );
+      auto pf = pfs.find( 0 );
+      if( pf == pfs.end() ) {
+         if ( psize > 0 ) {
+            pfs.emplace( owner, [&]( auto& p ){
+                  p.profile = profile;
+               });
+         }
+      } else {
+        if ( psize > 0 ) {
+           pfs.modify( pf, owner, [&]( auto& p ) {
+                 p.profile = profile;
+              });
+        } else {
+           pfs.erase( pf );
+        }
+      }
    }
 
    void token::sub_balance( name owner, asset value ) {
@@ -293,7 +307,6 @@ namespace eosio {
          to_acnts.emplace( ram_payer, [&]( auto& a ){
                a.balance = value;
                a.last_claim_day = 0;
-               a.profile = "";
             });
       } else {
          to_acnts.modify( to, same_payer, [&]( auto& a ) {
@@ -383,9 +396,10 @@ namespace eosio {
       // Log this basic income payment with an inline "income" action.
       log_claim( from, claim_quantity, curr_lcd + last_claim_day_delta, lost_days );
 
-      // Update the token total supply.
+      // Update the token total supply and claims count.
       statstable.modify( st, same_payer, [&]( auto& s ) {
             s.supply += claim_quantity;
+            ++s.claims;
          });
 
       // Finally, move the claim date window proportional to the amount of days of income we claimed
