@@ -57,7 +57,7 @@ namespace eosio {
          void income( name to, asset quantity, string memo );
 
       [[eosio::action]]
-         void setshare( name owner, name to, uint8_t percent ); // Implicit token symbol
+         void setshare( name owner, name to, int64_t percent ); // Implicit token symbol
 
       [[eosio::action]]
          void resetshare( name owner ); // Implicit token symbol
@@ -67,6 +67,10 @@ namespace eosio {
 
       [[eosio::action]]
          void setprofile( name owner, string profile ); // Implicit token symbol
+
+      // Debug helper action
+      //      [[eosio::action]]
+      //	 void sublcd ( name owner, uint64_t amount ); // Implicit token symbol
 
       struct income_notification_abi {
          name        to;
@@ -102,12 +106,16 @@ namespace eosio {
       using open_action = eosio::action_wrapper<"open"_n, &token::open>;
       using close_action = eosio::action_wrapper<"close"_n, &token::close>;
       using claim_action = eosio::action_wrapper<"claim"_n, &token::claim>;
+      using claimfor_action = eosio::action_wrapper<"claimfor"_n, &token::claimfor>;
       using burn_action = eosio::action_wrapper<"burn"_n, &token::burn>;
       using income_action = eosio::action_wrapper<"income"_n, &token::income>;
       using setshare_action = eosio::action_wrapper<"setshare"_n, &token::setshare>;
       using resetshare_action = eosio::action_wrapper<"resetshare"_n, &token::resetshare>;
       using shareincome_action = eosio::action_wrapper<"shareincome"_n, &token::shareincome>;
       using setprofile_action = eosio::action_wrapper<"setprofile"_n, &token::setprofile>;
+
+      // Debug helper action
+      //using sublcd_action = eosio::action_wrapper<"sublcd"_n, &token::sublcd>;
 
    private:
 

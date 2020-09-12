@@ -31,7 +31,6 @@ namespace eosio {
          });
    }
 
-
    void token::issue( name to, asset quantity, string memo )
    {
       auto sym = quantity.symbol;
@@ -137,9 +136,6 @@ namespace eosio {
                a.last_claim_day = 0;
             });
       }
-
-      // reuse this call to also check for income (new accounts will start with 1 XDL)
-      try_ubi_claim( owner, symbol, ram_payer, statstable, st, false );
    }
 
    void token::close( name owner, const symbol& symbol )
@@ -150,31 +146,36 @@ namespace eosio {
       check( it != acnts.end(), "Balance row already deleted or never existed. Action won't have any effect." );
       check( it->balance.amount == 0, "Cannot close because the balance is not zero." );
       const time_type today = get_today();
+
+      // if never claimed (LCD=0), will pass this check always
+      check( it->last_claim_day < today, "Cannot close() yet: income was already claimed for today." );
+
+      // if never claimed (LCD=0), then you can close before the reward period ends, precisely because you never claimed
       if ( it->last_claim_day != 0 ) {
-         check( it->last_claim_day < today, "Cannot close() yet: income was already claimed for today." );
+	check( today > last_signup_reward_day, "Cannot close() yet: must wait for the end of the reward period.");
       }
-      check( today > last_signup_reward_day, "Cannot close() yet: must wait for the end of the reward period.");
+      
       acnts.erase( it );
    }
 
-   void token::claim( name owner ) {
-      //require_auth( owner );
-      //require_recipient( owner );
-
-      // in case the user didn't have an open balance yet, now they will have one.
-      // open() also checks for income.
-      open( owner, COIN_SYMBOL, owner );
-
-      //stats statstable( _self, COIN_SYMBOL.code().raw() );
-      //const auto& st = statstable.get( COIN_SYMBOL.code().raw() );
-      //
-      //try_ubi_claim( owner, COIN_SYMBOL, owner, statstable, st, true );
+   void token::claim( name owner )
+   {
+      claimfor( owner, owner );
    }
 
    void token::claimfor( name owner, name ram_payer )
    {
       require_recipient( owner );
+      require_recipient( ram_payer );
+      
+      // in case the user didn't have an open balance yet, now they will have one.
       open( owner, COIN_SYMBOL, ram_payer );
+
+      // now try to claim
+      stats statstable( _self, COIN_SYMBOL.code().raw() );
+      const auto& st = statstable.get( COIN_SYMBOL.code().raw() );
+      
+      try_ubi_claim( owner, COIN_SYMBOL, ram_payer, statstable, st, true );
    }
 
    void token::burn( name owner, asset quantity )
@@ -207,11 +208,11 @@ namespace eosio {
       require_recipient( to );
    }
 
-   void token::setshare( name owner, name to, uint8_t percent )
+   void token::setshare( name owner, name to, int64_t percent )
    {
       require_auth( owner );
 
-      check( percent <= 100, "invalid percent value" );
+      check( (percent >= 0) && (percent <= 100), "invalid percent value" );
       check( owner != to , "cannot setshare to self" );
       check( is_account( to ), "to account does not exist");
 
@@ -234,7 +235,7 @@ namespace eosio {
          }
       }
 
-      // If share percent total exceed 100%, refuse this action
+      // If share percent total exceeds 100%, refuse this action
       uint64_t pcsum = 0; 
       it = stbl.begin();
       while ( it != stbl.end() ) {
@@ -287,6 +288,18 @@ namespace eosio {
         }
       }
    }
+
+/*
+  // Debug helper action
+  void token::sublcd ( name owner, uint64_t amount ) {
+    require_auth( owner );
+    accounts from_acnts( _self, owner.value );
+    const auto& from = from_acnts.get( COIN_SYMBOL.code().raw(), "no balance object found" );
+    from_acnts.modify( from, owner, [&]( auto& a ) {
+	a.last_claim_day -= amount;
+      });
+  }
+*/
 
    void token::sub_balance( name owner, asset value ) {
       accounts from_acnts( _self, owner.value );
@@ -404,8 +417,8 @@ namespace eosio {
 
       // Finally, move the claim date window proportional to the amount of days of income we claimed
       //   (and also account for days of income that have been forever lost)
-      from_acnts.modify( from_account, from, [&]( auto& a ) {
-            a.last_claim_day = curr_lcd + last_claim_day_delta;
+      from_acnts.modify( from_account, same_payer, [&]( auto& a ) {
+             a.last_claim_day = curr_lcd + last_claim_day_delta;
          });
 
       // Now, the actual income payment can be *shared*, so we need to check the shares table.
@@ -518,4 +531,4 @@ namespace eosio {
 
 } /// namespace eosio
 
-EOSIO_DISPATCH( eosio::token, (create)(issue)(transfer)(open)(close)(retire)(claim)(burn)(income) )
+EOSIO_DISPATCH( eosio::token, (create)(issue)(transfer)(open)(close)(retire)(claim)(burn)(income)(claimfor)(setprofile)(setshare)(resetshare)(shareincome)/*(sublcd)*/ )
