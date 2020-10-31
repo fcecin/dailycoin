@@ -99,7 +99,7 @@ namespace eosio {
       check( is_account( to ), "to account does not exist");
       auto sym = quantity.symbol.code();
       stats statstable( _self, sym.raw() );
-      const auto& st = statstable.get( sym.raw() );
+      const auto& st = statstable.get( sym.raw(), "symbol does not exist" );
 
       require_recipient( from );
       require_recipient( to );
@@ -111,7 +111,7 @@ namespace eosio {
 
       auto payer = has_auth( to ) ? to : from;
 
-      // always check for pending dailycoin income when using it
+      // check for pending dailycoin income
       try_ubi_claim( from, quantity.symbol, payer, statstable, st, false );
 
       sub_balance( from, quantity );
@@ -123,7 +123,6 @@ namespace eosio {
       require_auth( ram_payer );
 
       auto sym_code_raw = symbol.code().raw();
-
       stats statstable( _self, sym_code_raw );
       const auto& st = statstable.get( sym_code_raw, "symbol does not exist" );
       check( st.supply.symbol == symbol, "symbol precision mismatch" );
@@ -141,6 +140,7 @@ namespace eosio {
    void token::close( name owner, const symbol& symbol )
    {
       require_auth( owner );
+
       accounts acnts( _self, owner.value );
       auto it = acnts.find( symbol.code().raw() );
       check( it != acnts.end(), "Balance row already deleted or never existed. Action won't have any effect." );
@@ -152,9 +152,9 @@ namespace eosio {
 
       // if never claimed (LCD=0), then you can close before the reward period ends, precisely because you never claimed
       if ( it->last_claim_day != 0 ) {
-	check( today > last_signup_reward_day, "Cannot close() yet: must wait for the end of the reward period.");
+         check( today > last_signup_reward_day, "Cannot close() yet: must wait for the end of the reward period.");
       }
-      
+
       acnts.erase( it );
    }
 
@@ -167,14 +167,14 @@ namespace eosio {
    {
       require_recipient( owner );
       require_recipient( ram_payer );
-      
+
       // in case the user didn't have an open balance yet, now they will have one.
       open( owner, COIN_SYMBOL, ram_payer );
 
       // now try to claim
       stats statstable( _self, COIN_SYMBOL.code().raw() );
       const auto& st = statstable.get( COIN_SYMBOL.code().raw() );
-      
+
       try_ubi_claim( owner, COIN_SYMBOL, ram_payer, statstable, st, true );
    }
 
@@ -184,15 +184,12 @@ namespace eosio {
 
       auto sym = quantity.symbol;
       check( sym.is_valid(), "invalid symbol name" );
-
       stats statstable( _self, sym.code().raw() );
       auto existing = statstable.find( sym.code().raw() );
       check( existing != statstable.end(), "token with symbol does not exist" );
       const auto& st = *existing;
-
       check( quantity.is_valid(), "invalid quantity" );
       check( quantity.amount > 0, "must retire positive quantity" );
-
       check( quantity.symbol == st.supply.symbol, "symbol precision mismatch" );
 
       statstable.modify( st, same_payer, [&]( auto& s ) {
@@ -236,7 +233,7 @@ namespace eosio {
       }
 
       // If share percent total exceeds 100%, refuse this action
-      uint64_t pcsum = 0; 
+      uint64_t pcsum = 0;
       it = stbl.begin();
       while ( it != stbl.end() ) {
         pcsum += (*it).percent;
@@ -265,11 +262,8 @@ namespace eosio {
    void token::setprofile( name owner, string profile )
    {
       require_auth( owner );
-
       uint64_t psize = profile.size();
-
       check( psize <= 1024, "profile has more than 1024 bytes" );
-
       profiles pfs( _self, owner.value );
       auto pf = pfs.find( 0 );
       if( pf == pfs.end() ) {
@@ -289,16 +283,152 @@ namespace eosio {
       }
    }
 
+   void token::lock( name owner, asset quantity ) {
+      try_refund( owner, owner, false );
+
+      // basic checks
+      auto sym = quantity.symbol;
+      check( sym.is_valid(), "invalid symbol name" );
+      stats statstable( _self, sym.code().raw() );
+      auto existing = statstable.find( sym.code().raw() );
+      check( existing != statstable.end(), "token with symbol does not exist" );
+      const auto& st = *existing;
+      check( quantity.is_valid(), "invalid quantity" );
+      check( quantity.amount > 0, "quantity must be positive" );
+      check( quantity.symbol == st.supply.symbol, "symbol precision mismatch" );
+
+      asset pending = quantity;
+      asset lockadd = asset{0, sym};
+
+      // source some or all of lock quantity from existing unlock request if any
+      asset unlockbal = asset{0, sym};
+      unlockers uls( _self, owner.value );
+      auto ulit = uls.find( sym.code().raw() );
+      if (ulit != uls.end()) {
+         if (pending < ulit->balance) {
+            lockadd = pending;
+            uls.modify( ulit, same_payer, [&]( auto& u ) {
+                  u.balance -= pending;
+                  u.request_time = current_time_point();
+               });
+            unlockbal = ulit->balance;
+         } else {
+            lockadd = ulit->balance;
+            uls.erase( ulit );
+         }
+         pending -= lockadd;
+      }
+
+      // if any quantity left to lock, take it from the owner's liquid balance
+      if (pending.amount > 0) {
+         sub_balance( owner, pending );
+         lockadd += pending;
+      }
+
+      // feed the existing lock singleton entry or create one
+      asset lockbal;
+      lockers lks( _self, owner.value );
+      auto lkit = lks.find( sym.code().raw() );
+      if (lkit == lks.end()) {
+         lks.emplace( owner, [&]( auto& l ){
+               l.balance = lockadd;
+            });
+         lockbal = lockadd;
+      } else {
+         lks.modify( lkit, same_payer, [&]( auto& l ) {
+               l.balance += lockadd;
+            });
+         lockbal = lkit->balance;
+      }
+
+      // log the result
+      log_lock( owner, lockbal, unlockbal, -pending );
+   }
+
+   void token::unlock( name owner, asset quantity ) {
+      try_refund( owner, owner, false );
+
+      // basic checks
+      auto sym = quantity.symbol;
+      check( sym.is_valid(), "invalid symbol name" );
+      stats statstable( _self, sym.code().raw() );
+      auto existing = statstable.find( sym.code().raw() );
+      check( existing != statstable.end(), "token with symbol does not exist" );
+      const auto& st = *existing;
+      check( quantity.is_valid(), "invalid quantity" );
+      check( quantity.amount > 0, "quantity must be positive" );
+      check( quantity.symbol == st.supply.symbol, "symbol precision mismatch" );
+
+      // find locker entry and check it has a sufficient balance
+      lockers lks( _self, owner.value );
+      auto lkit = lks.find( sym.code().raw() );
+      check( lkit != lks.end(), "no locked funds" );
+      if ( quantity > lkit->balance ) {
+         string err = "locked balance is only ";
+         err.append( lkit->balance.to_string() );
+         check( false, err );
+      }
+
+      // subtract quantity from locker balance singleton
+      lks.modify( lkit, same_payer, [&]( auto& l ) {
+            l.balance -= quantity;
+         });
+
+      // move locked balance into existing or new unlocking entry
+      asset unlockbal;
+      unlockers uls( _self, owner.value );
+      auto ulit = uls.find( sym.code().raw() );
+      if (ulit == uls.end()) {
+         uls.emplace( owner, [&]( auto& u ){
+               u.balance = quantity;
+               u.request_time = current_time_point();
+            });
+         unlockbal = quantity;
+      } else {
+         uls.modify( ulit, same_payer, [&]( auto& u ){
+               u.balance += quantity;
+               u.request_time = current_time_point();
+            });
+         unlockbal = ulit->balance;
+      }
+
+      // log the result
+      log_unlock( owner, lkit->balance, unlockbal );
+
+      // if locker balance is now zero then delete it
+      if (lkit->balance.amount == 0)
+         lks.erase( lkit );
+   }
+
+   void token::refund( name owner ) {
+      try_refund( owner, owner, true );
+   }
+
+   void token::lockresult( name owner, asset locked_total, asset unlocking_total, asset liquid_change ) {
+      require_auth( _self );
+      require_recipient( owner );
+   }
+
+   void token::unlockresult( name owner, asset locked_total, asset unlocking_total ) {
+      require_auth( _self );
+      require_recipient( owner );
+   }
+
+   void token::refundresult( name owner, asset liquid_change ) {
+      require_auth( _self );
+      require_recipient( owner );
+   }
+
 /*
-  // Debug helper action
-  void token::sublcd ( name owner, uint64_t amount ) {
-    require_auth( owner );
-    accounts from_acnts( _self, owner.value );
-    const auto& from = from_acnts.get( COIN_SYMBOL.code().raw(), "no balance object found" );
-    from_acnts.modify( from, owner, [&]( auto& a ) {
-	a.last_claim_day -= amount;
-      });
-  }
+   // Debug helper action
+   void token::sublcd ( name owner, uint64_t amount ) {
+      require_auth( owner );
+      accounts from_acnts( _self, owner.value );
+      const auto& from = from_acnts.get( COIN_SYMBOL.code().raw(), "no balance object found" );
+      from_acnts.modify( from, owner, [&]( auto& a ) {
+            a.last_claim_day -= amount;
+         });
+   }
 */
 
    void token::sub_balance( name owner, asset value ) {
@@ -326,6 +456,44 @@ namespace eosio {
                a.balance += value;
             });
       }
+   }
+
+   void token::try_refund( name owner, name payer, bool fail ) {
+
+      // check if an unlocker entry exists
+      auto sym_code_raw = COIN_SYMBOL.code().raw();
+      unlockers uls( _self, owner.value );
+      auto ulit = uls.find( sym_code_raw );
+      if (ulit == uls.end()) {
+         if (fail)
+            check( false, "no unlocking funds" );
+         return;
+      }
+
+      // check unlocker delay is expired
+      int64_t ustogo =
+         ulit->request_time.time_since_epoch().count()
+         + UNLOCK_TIME_MICROSECONDS
+         - current_time_point().time_since_epoch().count();
+
+      if (ustogo > 0) {
+         if (fail) {
+            string err = "unlock delay not elapsed; ";
+            err.append( std::to_string(ustogo / 1000000) );
+            err.append( " seconds left.");
+            check( false, err );
+         }
+         return;
+      }
+
+      // refund unlocked quantity to account balance
+      add_balance( owner, ulit->balance, payer );
+
+      // log the refund
+      log_refund( owner, ulit->balance );
+
+      // remove unlocker entry
+      uls.erase( ulit );
    }
 
    void token::try_ubi_claim( name from, const symbol& sym, name payer, stats& statstable, const currency_stats& st, bool fail )
@@ -435,7 +603,7 @@ namespace eosio {
       uint64_t pcsum = 0;
       shares stbl( _self, from.value );
       auto it = stbl.begin();
-      while ( it != stbl.end() ) {
+      while ( (it != stbl.end()) && (share_available > 0) ) {
         const auto& sh = *it;
 
         int64_t shareamt = 0;
@@ -458,17 +626,57 @@ namespace eosio {
         log_share( from, sh.to, share_quantity, sh.percent );
         add_balance( sh.to, share_quantity, payer );
 
-        // If this is the last share, end the action
-        if ( share_available <= 0 ) {
-          return;
-        }
-
+        // search for the next entry in the shares table
         ++it;
       }
 
-      // If we reach this code, then the UBI claimer has nonzero funds to receive
-      claim_quantity.set_amount(share_available);
-      add_balance( from, claim_quantity, payer );
+      // Here we are either out of accounts to receive a share of income, or out of income.
+      // If we still have income left (i.e., the former case) then give it to the UBI claimer.
+      if ( share_available > 0 ) {
+        claim_quantity.set_amount( share_available );
+        add_balance( from, claim_quantity, payer );
+      }
+
+      // ONCE per day, we will also incur the cost of checking for unlocking refunds, which is
+      //   an acceptable overhead.
+      // This works even if this is called from claimfor() with authorization from a different
+      //   ram_payer account, because refunding only releases RAM.
+      // Note that if you call claim() or claimfor(), you won't get unlocking refunds unless
+      //   it is time to also receive your next UBI payment. The only way to make sure that
+      //   you're checking refunds is to explicitly call refund("youraccount") yourself.
+      try_refund( from, payer, false );
+   }
+
+   // Logs the result of a lock action
+   void token::log_lock( name owner, asset locker_balance, asset unlocker_balance, asset token_delta ) {
+      action {
+         permission_level{_self, name("active")},
+            _self,
+               name("lockresult"),
+               lockresult_notification_abi { .owner=owner, .locked_total=locker_balance,
+                  .unlocking_total=unlocker_balance, .liquid_change=token_delta }
+      }.send();
+   }
+
+   // Logs the result of an unlock action
+   void token::log_unlock( name owner, asset locker_balance, asset unlocker_balance ) {
+      action {
+         permission_level{_self, name("active")},
+            _self,
+               name("unlockresult"),
+               unlockresult_notification_abi { .owner=owner, .locked_total=locker_balance,
+                  .unlocking_total=unlocker_balance }
+      }.send();
+   }
+
+   // Logs the result of a refund action
+   void token::log_refund( name owner, asset token_delta ) {
+      action {
+         permission_level{_self, name("active")},
+            _self,
+               name("refundresult"),
+               refundresult_notification_abi { .owner=owner, .liquid_change=token_delta }
+      }.send();
    }
 
    // Logs the UBI claim as an "income" action that only the contract can call.
@@ -500,7 +708,7 @@ namespace eosio {
          shareincome_notification_abi { .from=giver, .to=receiver, .quantity=share_quantity, .percent=share_percent }
       }.send();
    }
-  
+
    // "days" is days since epoch
    string token::days_to_string( int64_t days )
    {
@@ -531,4 +739,4 @@ namespace eosio {
 
 } /// namespace eosio
 
-EOSIO_DISPATCH( eosio::token, (create)(issue)(transfer)(open)(close)(retire)(claim)(burn)(income)(claimfor)(setprofile)(setshare)(resetshare)(shareincome)/*(sublcd)*/ )
+EOSIO_DISPATCH( eosio::token, (create)(issue)(transfer)(open)(close)(retire)(claim)(burn)(income)(claimfor)(setprofile)(setshare)(resetshare)(shareincome)(lock)(unlock)(refund)(lockresult)(unlockresult)(refundresult)/*(sublcd)*/ )

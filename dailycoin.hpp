@@ -23,8 +23,7 @@ namespace eosio {
       using contract::contract;
 
       [[eosio::action]]
-         void create( name   issuer,
-                      asset  maximum_supply);
+         void create( name issuer, asset maximum_supply );
 
       [[eosio::action]]
          void issue( name to, asset quantity, string memo );
@@ -33,10 +32,7 @@ namespace eosio {
          void retire( asset quantity, string memo );
 
       [[eosio::action]]
-         void transfer( name    from,
-                        name    to,
-                        asset   quantity,
-                        string  memo );
+         void transfer( name from, name to, asset quantity, string  memo );
 
       [[eosio::action]]
          void open( name owner, const symbol& symbol, name ram_payer );
@@ -48,7 +44,7 @@ namespace eosio {
          void claim( name owner ); // Implicit token symbol
 
       [[eosio::action]]
-        void claimfor( name owner, name ram_payer ); // Implicit token symbol
+         void claimfor( name owner, name ram_payer ); // Implicit token symbol
 
       [[eosio::action]]
          void burn( name owner, asset quantity );
@@ -63,10 +59,28 @@ namespace eosio {
          void resetshare( name owner ); // Implicit token symbol
 
       [[eosio::action]]
-         void shareincome( name from, name to, asset quantity, uint8_t percent ); // Implicit token symbol
+         void shareincome( name from, name to, asset quantity, uint8_t percent );
 
       [[eosio::action]]
          void setprofile( name owner, string profile ); // Implicit token symbol
+
+      [[eosio::action]]
+         void lock( name owner, asset quantity );
+
+      [[eosio::action]]
+         void unlock( name owner, asset quantity );
+
+      [[eosio::action]]
+         void refund( name owner ); // Implicit token symbol
+
+      [[eosio::action]]
+         void lockresult( name owner, asset locked_total, asset unlocking_total, asset liquid_change );
+
+      [[eosio::action]]
+         void unlockresult( name owner, asset locked_total, asset unlocking_total );
+
+      [[eosio::action]]
+         void refundresult( name owner, asset liquid_change );
 
       // Debug helper action
       //      [[eosio::action]]
@@ -83,6 +97,24 @@ namespace eosio {
          name        to;
          asset       quantity;
          uint8_t     percent;
+      };
+
+      struct lockresult_notification_abi {
+         name        owner;
+         asset       locked_total;
+         asset       unlocking_total;
+         asset       liquid_change;
+      };
+
+      struct unlockresult_notification_abi {
+         name        owner;
+         asset       locked_total;
+         asset       unlocking_total;
+      };
+
+      struct refundresult_notification_abi {
+         name        owner;
+         asset       liquid_change;
       };
 
       static asset get_supply( name token_contract_account, symbol_code sym_code )
@@ -113,6 +145,12 @@ namespace eosio {
       using resetshare_action = eosio::action_wrapper<"resetshare"_n, &token::resetshare>;
       using shareincome_action = eosio::action_wrapper<"shareincome"_n, &token::shareincome>;
       using setprofile_action = eosio::action_wrapper<"setprofile"_n, &token::setprofile>;
+      using lock_action = eosio::action_wrapper<"lock"_n, &token::lock>;
+      using unlock_action = eosio::action_wrapper<"unlock"_n, &token::unlock>;
+      using refund_action = eosio::action_wrapper<"refund"_n, &token::refund>;
+      using lockresult_action = eosio::action_wrapper<"lockresult"_n, &token::lockresult>;
+      using unlockresult_action = eosio::action_wrapper<"unlockresult"_n, &token::unlockresult>;
+      using refundresult_action = eosio::action_wrapper<"refundresult"_n, &token::refundresult>;
 
       // Debug helper action
       //using sublcd_action = eosio::action_wrapper<"sublcd"_n, &token::sublcd>;
@@ -155,18 +193,41 @@ namespace eosio {
       struct [[eosio::table]] profile {
          string   profile;
 
-         uint64_t primary_key()const { return 0; }
+         uint64_t primary_key()const { return 0; } // singleton
+      };
+
+      struct [[eosio::table]] locker {
+         asset    balance;
+
+         uint64_t primary_key()const { return balance.symbol.code().raw(); }
+      };
+
+      struct [[eosio::table]] unlocker {
+         asset      balance;
+         time_point request_time;
+
+         int64_t primary_key()const { return balance.symbol.code().raw(); }
       };
 
       typedef eosio::multi_index< "accounts"_n, account > accounts;
       typedef eosio::multi_index< "stat"_n, currency_stats > stats;
       typedef eosio::multi_index< "shares"_n, share > shares;
       typedef eosio::multi_index< "profiles"_n, profile > profiles;
+      typedef eosio::multi_index< "lockers"_n, locker > lockers;
+      typedef eosio::multi_index< "unlockers"_n, unlocker > unlockers;
 
       void sub_balance( name owner, asset value );
       void add_balance( name owner, asset value, name ram_payer );
 
+      void try_refund( name owner, name payer, bool fail );
+
       void try_ubi_claim( name from, const symbol& sym, name payer, stats& statstable, const currency_stats& st, bool fail );
+
+      void log_lock( name owner, asset locker_balance, asset unlocker_balance, asset token_delta );
+
+      void log_unlock( name owner, asset locker_balance, asset unlocker_balance );
+
+      void log_refund( name owner, asset token_delta );
 
       void log_claim( name claimant, asset claim_quantity, time_type next_last_claim_day, time_type lost_days );
 
@@ -174,7 +235,9 @@ namespace eosio {
 
       static string days_to_string( int64_t days );
 
-      static time_type get_today() { return (time_type)(current_time_point().sec_since_epoch() / 86400); }
+      static time_type get_today() { return (time_type)(current_time_point().time_since_epoch().count() / 86400000000ll); }
+
+      static const int64_t UNLOCK_TIME_MICROSECONDS = 259200000000ll; // 3 days
 
       static const int64_t max_past_claim_days = 360;
 
