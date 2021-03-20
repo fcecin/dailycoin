@@ -111,8 +111,17 @@ namespace eosio {
 
       auto payer = has_auth( to ) ? to : from;
 
-      // check for pending dailycoin income
+      // check for pending dailycoin income and pay the demurrage tax
       try_ubi_claim( from, quantity.symbol, payer, statstable, st, false );
+
+      // We have to also resolve UBI and pay the tax on the recipient account,
+      //   else the amount being transferred to them might be taxed twice later.
+      // This has the unfortunate side-effect that people that send you some
+      //   tokens will control when your ID is checked for a pending UBI claim,
+      //   and if the ID check fails at that time, you lose all pending UBI.
+      //   But this should not be relevant in practice, as people's ID won't
+      //   often become invalid at random times for random reasons.
+      try_ubi_claim( to, quantity.symbol, payer, statstable, st, false );
 
       sub_balance( from, quantity );
       add_balance( to, quantity, payer );
@@ -150,10 +159,12 @@ namespace eosio {
       // if never claimed (LCD=0), will pass this check always
       check( it->last_claim_day < today, "Cannot close() yet: income was already claimed for today." );
 
+      // Reward period removed because it is incompatible with the demurrage code.
+      //
       // if never claimed (LCD=0), then you can close before the reward period ends, precisely because you never claimed
-      if ( it->last_claim_day != 0 ) {
-         check( today > last_signup_reward_day, "Cannot close() yet: must wait for the end of the reward period.");
-      }
+      //if ( it->last_claim_day != 0 ) {
+      //   check( today > last_signup_reward_day, "Cannot close() yet: must wait for the end of the reward period.");
+      //}
 
       acnts.erase( it );
    }
@@ -283,6 +294,7 @@ namespace eosio {
       }
    }
 
+/*
    void token::lock( name owner, asset quantity ) {
       try_refund( owner, owner, false );
 
@@ -418,6 +430,12 @@ namespace eosio {
       require_auth( _self );
       require_recipient( owner );
    }
+*/
+
+   void token::tax( name owner, asset quantity ) {
+      require_auth( _self );
+      require_recipient( owner );
+   }
 
 /*
    // Debug helper action
@@ -458,6 +476,7 @@ namespace eosio {
       }
    }
 
+/*
    void token::try_refund( name owner, name payer, bool fail ) {
 
       // check if an unlocker entry exists
@@ -495,9 +514,63 @@ namespace eosio {
       // remove unlocker entry
       uls.erase( ulit );
    }
+*/
 
    void token::try_ubi_claim( name from, const symbol& sym, name payer, stats& statstable, const currency_stats& st, bool fail )
    {
+      accounts from_acnts( _self, from.value );
+      const auto& from_account = from_acnts.get( sym.code().raw(), "no balance object found" );
+
+      const time_type today = get_today();
+
+      time_type curr_lcd = from_account.last_claim_day;
+
+      if (curr_lcd >= today) {
+         if (fail)
+            check( false, "no pending income to claim" );
+         return;
+      }
+
+      // We are stealing the UBI claim time counter to implement the negative interest
+      //   (demurrage) feature also. For that, we do the demurrage calculation and the
+      //   updating of the "last_claim_day" field before we check for ID, as demurrage
+      //   applies to ALL accounts, not just those who have ID and UBI.
+      // As a consequence, the now joint time counter *always* moves forward if a day
+      //   has indeed elapsed. If a person's ID check fails, that will mean they will
+      //   lose any accumulated UBI payment for the period that the time counter will
+      //   advance.
+
+      int ni_days = 1; // negative interest days elapsed defaults to 1
+      if (curr_lcd > 0) {
+        ni_days = today - curr_lcd; // curr_lcd < today, so ni_days is at least 1
+      }
+
+      // Compute the demurrage charge value over the user's balance
+      double pw = pow(0.999, ((double)ni_days) / 365.0);
+      double dv = pw * from_account.balance.amount;
+      int64_t burn_amt = from_account.balance.amount - ((int64_t)dv);
+      asset burn_quantity = asset{burn_amt, from_account.balance.symbol};
+
+      // Demurrage has been and income will be computed to this exact day when this
+      //   function finishes (no matter how it does finish), which is why we set
+      //   the last_claim_day to today unconditionally here.
+      // Also update the balance to reflect the amount of money destroyed by the
+      //   demurrage tax.
+      from_acnts.modify( from_account, same_payer, [&]( auto& a ) {
+             a.last_claim_day = today;
+	     a.balance.amount -= burn_amt;
+         });
+
+      // Log the destruction of money by the demurrage tax (otherwise there's no way
+      //   to know, since we are subtracting from the user's balance directly).
+      log_tax( from, burn_quantity );
+
+      // Update the token total supply and the total burned amount.
+      statstable.modify( st, same_payer, [&]( auto& s ) {
+            s.supply -= burn_quantity;
+            s.burned += burn_quantity;
+         });
+
       // *****************************************************************************
       // TODO: check if this account has verified identity
       // If it doesn't, return.
@@ -512,19 +585,8 @@ namespace eosio {
       //      return;
       // }
 
-      accounts from_acnts( _self, from.value );
-      const auto& from_account = from_acnts.get( sym.code().raw(), "no balance object found" );
-
-      const time_type today = get_today();
-
-      time_type curr_lcd = from_account.last_claim_day;
-
-      if (curr_lcd >= today) {
-         if (fail)
-            check( false, "no pending income to claim" );
-         return;
-      }
-
+      // NEW: Removed the reward period logic, as it is incompatible with the demurrage code.
+      //
       // If we are NOT in the reward period, then a last_claim_day of zero means YESTERDAY,
       //   that is, you get ONE token when you successfully claim for the first time today
       //   in a verified account.
@@ -533,16 +595,18 @@ namespace eosio {
       //   date" value pushed into the past as needed (capped at max_past_claim_days).
       if (curr_lcd == 0) {
         curr_lcd = today - 1;
-        if (today <= last_signup_reward_day) {
-          int64_t bonus_days = last_signup_reward_day - today + 1;
-          if (bonus_days > max_past_claim_days) {
-            bonus_days = max_past_claim_days;
-          }
-          curr_lcd -= bonus_days;
-        }
+        //if (today <= last_signup_reward_day) {
+        //  int64_t bonus_days = last_signup_reward_day - today + 1;
+        //  if (bonus_days > max_past_claim_days) {
+        //    bonus_days = max_past_claim_days;
+        //  }
+        //  curr_lcd -= bonus_days;
+        //}
       }
 
       // The UBI grants 1 token per day per account.
+      // The 0.1% per year demurrage tax is not applied to accumulated UBI income, because the difference
+      //   is negligible: at most 0.18 tokens, if you wait 360 days to claim 360 tokens.
 
       // Compute the claim amount relative to days elapsed since the last claim, excluding today's pay.
       // If you claimed yesterday, this is zero.
@@ -583,11 +647,15 @@ namespace eosio {
             ++s.claims;
          });
 
+      // NEW: The demurrage logic changes this. The last_claim_day is updated after the demurrage charge.
+      //      Any UBI payment that can't be collected after the demurrage charge, for whatever reason,
+      //        is now simply lost.
+      //
       // Finally, move the claim date window proportional to the amount of days of income we claimed
       //   (and also account for days of income that have been forever lost)
-      from_acnts.modify( from_account, same_payer, [&]( auto& a ) {
-             a.last_claim_day = curr_lcd + last_claim_day_delta;
-         });
+      //from_acnts.modify( from_account, same_payer, [&]( auto& a ) {
+      //       a.last_claim_day = curr_lcd + last_claim_day_delta;
+      //   });
 
       // Now, the actual income payment can be *shared*, so we need to check the shares table.
       // So, we iterate over the shares table for "from" and look for (to, percent) entries to see
@@ -644,9 +712,10 @@ namespace eosio {
       // Note that if you call claim() or claimfor(), you won't get unlocking refunds unless
       //   it is time to also receive your next UBI payment. The only way to make sure that
       //   you're checking refunds is to explicitly call refund("youraccount") yourself.
-      try_refund( from, payer, false );
+      //try_refund( from, payer, false );
    }
 
+/*
    // Logs the result of a lock action
    void token::log_lock( name owner, asset locker_balance, asset unlocker_balance, asset token_delta ) {
       action {
@@ -678,7 +747,18 @@ namespace eosio {
                refundresult_notification_abi { .owner=owner, .liquid_change=token_delta }
       }.send();
    }
+*/
 
+   // Logs the result of a tax action
+   void token::log_tax( name owner, asset burned_quantity ) {
+      action {
+         permission_level{_self, name("active")},
+            _self,
+               name("tax"),
+               tax_notification_abi { .owner=owner, .quantity=burned_quantity }
+      }.send();
+   }
+  
    // Logs the UBI claim as an "income" action that only the contract can call.
    void token::log_claim( name claimant, asset claim_quantity, time_type next_last_claim_day, time_type lost_days )
    {
@@ -739,4 +819,4 @@ namespace eosio {
 
 } /// namespace eosio
 
-EOSIO_DISPATCH( eosio::token, (create)(issue)(transfer)(open)(close)(retire)(claim)(burn)(income)(claimfor)(setprofile)(setshare)(resetshare)(shareincome)(lock)(unlock)(refund)(lockresult)(unlockresult)(refundresult)/*(sublcd)*/ )
+EOSIO_DISPATCH( eosio::token, (create)(issue)(transfer)(open)(close)(retire)(claim)(burn)(income)(claimfor)(setprofile)(setshare)(resetshare)(shareincome)/*(lock)(unlock)(refund)(lockresult)(unlockresult)(refundresult)*/(tax)/*(sublcd)*/ )
