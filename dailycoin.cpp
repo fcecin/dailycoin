@@ -184,7 +184,7 @@ namespace eosio {
 
       // now try to claim
       stats statstable( _self, COIN_SYMBOL.code().raw() );
-      const auto& st = statstable.get( COIN_SYMBOL.code().raw() );
+      const auto& st = statstable.get( COIN_SYMBOL.code().raw(), "symbol does not exist" );
 
       try_ubi_claim( owner, COIN_SYMBOL, ram_payer, statstable, st, true );
    }
@@ -519,8 +519,14 @@ namespace eosio {
    void token::try_ubi_claim( name from, const symbol& sym, name payer, stats& statstable, const currency_stats& st, bool fail )
    {
       accounts from_acnts( _self, from.value );
-      const auto& from_account = from_acnts.get( sym.code().raw(), "no balance object found" );
-
+      const auto from_account_it = from_acnts.find( sym.code().raw() );
+      if (from_account_it == from_acnts.end()) {
+         if (fail)
+            check( false, "no balance object found" );
+         return;
+      }      
+      const auto& from_account = *from_account_it;
+      
       const time_type today = get_today();
 
       time_type curr_lcd = from_account.last_claim_day;
