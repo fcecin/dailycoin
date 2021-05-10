@@ -524,9 +524,9 @@ namespace eosio {
          if (fail)
             check( false, "no balance object found" );
          return;
-      }      
+      }
       const auto& from_account = *from_account_it;
-      
+
       const time_type today = get_today();
 
       time_type curr_lcd = from_account.last_claim_day;
@@ -552,30 +552,32 @@ namespace eosio {
       }
 
       // Compute the demurrage charge value over the user's balance
-      double pw = pow(0.999, ((double)ni_days) / 365.0);
+      double pw = pow(0.995, ((double)ni_days) / 365.0);
       double dv = pw * from_account.balance.amount;
       int64_t burn_amt = from_account.balance.amount - ((int64_t)dv);
-      asset burn_quantity = asset{burn_amt, from_account.balance.symbol};
+      if (burn_amt > 0) {
+         asset burn_quantity = asset{burn_amt, from_account.balance.symbol};
 
-      // Demurrage has been and income will be computed to this exact day when this
-      //   function finishes (no matter how it does finish), which is why we set
-      //   the last_claim_day to today unconditionally here.
-      // Also update the balance to reflect the amount of money destroyed by the
-      //   demurrage tax.
-      from_acnts.modify( from_account, same_payer, [&]( auto& a ) {
-             a.last_claim_day = today;
-	     a.balance.amount -= burn_amt;
-         });
+         // Demurrage has been and income will be computed to this exact day when this
+         //   function finishes (no matter how it does finish), which is why we set
+         //   the last_claim_day to today unconditionally here.
+         // Also update the balance to reflect the amount of money destroyed by the
+         //   demurrage tax.
+         from_acnts.modify( from_account, same_payer, [&]( auto& a ) {
+               a.last_claim_day = today;
+               a.balance.amount -= burn_amt;
+            });
 
-      // Log the destruction of money by the demurrage tax (otherwise there's no way
-      //   to know, since we are subtracting from the user's balance directly).
-      log_tax( from, burn_quantity );
+         // Log the destruction of money by the demurrage tax (otherwise there's no way
+         //   to know, since we are subtracting from the user's balance directly).
+         log_tax( from, burn_quantity );
 
-      // Update the token total supply and the total burned amount.
-      statstable.modify( st, same_payer, [&]( auto& s ) {
-            s.supply -= burn_quantity;
-            s.burned += burn_quantity;
-         });
+         // Update the token total supply and the total burned amount.
+         statstable.modify( st, same_payer, [&]( auto& s ) {
+               s.supply -= burn_quantity;
+               s.burned += burn_quantity;
+            });
+      }
 
       // *****************************************************************************
       // TODO: check if this account has verified identity
@@ -611,8 +613,8 @@ namespace eosio {
       }
 
       // The UBI grants 1 token per day per account.
-      // The 0.1% per year demurrage tax is not applied to accumulated UBI income, because the difference
-      //   is negligible: at most 0.18 tokens, if you wait 360 days to claim 360 tokens.
+      // The 0.5% per year demurrage tax is not applied to accumulated UBI income, because the difference
+      //   is negligible. Can be interpreted as a pseudo-staking bonus for "locking" the tokens for 1 yr.
 
       // Compute the claim amount relative to days elapsed since the last claim, excluding today's pay.
       // If you claimed yesterday, this is zero.
@@ -764,7 +766,7 @@ namespace eosio {
                tax_notification_abi { .owner=owner, .quantity=burned_quantity }
       }.send();
    }
-  
+
    // Logs the UBI claim as an "income" action that only the contract can call.
    void token::log_claim( name claimant, asset claim_quantity, time_type next_last_claim_day, time_type lost_days )
    {
