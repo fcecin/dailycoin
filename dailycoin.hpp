@@ -87,11 +87,11 @@ namespace eosio {
       //   void refundresult( name owner, asset liquid_change );
 
       [[eosio::action]]
-         void tax( name owner, asset quantity ); 
+         void tax( name owner, asset quantity );
 
       // Debug helper action
-      //      [[eosio::action]]
-      //	 void sublcd ( name owner, uint64_t amount ); // Implicit token symbol
+      //[[eosio::action]]
+      //   void sublcd ( name owner, uint64_t amount ); // Implicit token symbol
 
       struct income_notification_abi {
          name        to;

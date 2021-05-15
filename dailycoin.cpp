@@ -698,6 +698,16 @@ namespace eosio {
         share_available -= shareamt;
         asset share_quantity = asset{shareamt, sym};
 
+        // Resolve UBI and tax for the target account of the shareincome. We need to
+        //   do this because we are adding tokens to an account and it must resolve
+        //   tax before it can receive new tokens, so the new tokens won't be taxed
+        //   twice/unduly later. And since tax and UBI share the same time field
+        //   (last_claim_day), we need to solve the tax, then the UBI, if any.
+        // Thanks to the last_claim_day being updated during the tax calculation that
+        //   already happened at the beginning of this function call, this recursive
+        //   call should not loop on us.
+        try_ubi_claim( sh.to, sym, payer, statstable, st, false );
+
         // log the giving and give it
         log_share( from, sh.to, share_quantity, sh.percent );
         add_balance( sh.to, share_quantity, payer );
